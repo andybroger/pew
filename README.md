@@ -11,7 +11,6 @@ So no need for complicated API setup, or gui walkthroughs.
 1. Run setup in TUI mode
 2. Install with `zfs (RAID1)`
 3. copy sshkey: `ssh-copy-id -i ~/.ssh/id_ed25519.pub root@pve1`
-4. install default apps: `apt install -y vim jq btop tree tmux`
 
 ### Postsetup
 
