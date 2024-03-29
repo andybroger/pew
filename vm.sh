@@ -142,14 +142,15 @@ execute_command() {
 }
 
 create_vm() {
-	local STATUS=$(execute_command "qm status $VMID" | grep status | awk '{print $2}')
-	if [[ "$STATUS" != "" ]]; then
+	local status
+    status=$(execute_command "qm status $VMID" | grep status | awk '{print $2}')
+	if [[ "$status" != "" ]]; then
 		echo "VM $VMID already exists."
 		exit 1
 	fi
 	execute_command "curl -sSL $IMAGE_URL -o /tmp/${IMAGE_URL##*/}"
 	execute_command "qm create $VMID \
-		--memory $(($MEMORY*1024)) --cores $CORES ${NAME:+--name \"$NAME\"} \
+		--memory (($MEMORY*1024)) --cores $CORES ${NAME:+--name \"$NAME\"} \
 		--machine q35 --serial0 socket --vga serial0 \
 		--bios ovmf --efidisk0 ${LOCATION}:1,efitype=4m \
 		--net0 virtio,bridge=${BRIDGE} --agent enabled=1 --ipconfig0 ip=dhcp,ip6=auto \

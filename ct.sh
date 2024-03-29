@@ -19,12 +19,12 @@ USER_PASSWORD=${USER_PASSWORD:-"hey"}
 USER_SSHKEYS=${USER_SSHKEYS:-""}
 
 create() {
-    parse_flags "${@:2}"
+	parse_flags "${@:2}"
 	local ostemplate
 	ostemplate=$(get_ostemplate)
 
 	echo "Creating container $CTID ($NAME) with $ostemplate on $NODE ..."
-    echo "Cores: $CORES Memory: $MEMORY MB Disk: $DISK_SIZE GB Bridge: $BRIDGE"
+	echo "Cores: $CORES Memory: $MEMORY MB Disk: $DISK_SIZE GB Bridge: $BRIDGE"
 
 	pct create "$CTID" "$ostemplate" \
 		--hostname "$NAME" \
@@ -69,11 +69,9 @@ create() {
 }
 
 destroy() {
-    # TODO: convert to pct
+	# TODO: convert to pct
 	pvesh delete /nodes/"$NODE"/lxc/"$CTID" --destroy-unreferenced-disks 1 --force 1 --purge 1
 }
-
-
 
 update() {
 	local os
@@ -93,13 +91,13 @@ ip () {
 }
 
 ip6 () {
-    lxc-attach -n "$CTID" -- ip a show eth0 | grep "inet6 " | awk '{print $2}' | cut -d/ -f1
+	lxc-attach -n "$CTID" -- ip a show eth0 | grep "inet6 " | awk '{print $2}' | cut -d/ -f1
 }
 
 migrate() {
 	NODE=$2
 	[[ -z "$NODE" ]] && echo "Node is required." && exit 1
-    echo "Migrating $NAME ($CTID) to $NODE ..."
+	echo "Migrating $NAME ($CTID) to $NODE ..."
 	pct migrate "$CTID" "$NODE" --restart 1
 }
 
@@ -111,16 +109,16 @@ ct() {
 	pct "$1" "$CTID" "${@:2}"
 }
 
-dkr() {
-    case $2 in
-    compose) docker_compose "${@:3}" ;;
-    apply) docker_apply "${@:3}" ;;
-    edit) lxc-attach -n "$CTID" -- nvim /home/hey/docker-compose.yml ;;
-    down) lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml down ;;
-    restart) lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml restart ;;
-    install) docker_install "${@:3}" ;;
-    *) lxc-attach -n "$CTID" -- docker "${@:2}" ;;
-    esac
+docker() {
+	case $2 in
+	compose) docker_compose "${@:3}" ;;
+	apply) docker_apply "${@:3}" ;;
+	edit) lxc-attach -n "$CTID" -- nvim /home/hey/docker-compose.yml ;;
+	down) lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml down ;;
+	restart) lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml restart ;;
+	install) docker_install "${@:3}" ;;
+	*) lxc-attach -n "$CTID" -- docker "${@:2}" ;;
+	esac
 }
 
 docker_apply() {
@@ -146,9 +144,10 @@ docker_install() {
 }
 
 ping() {
-	NODE=$1
+	NODE=$2
 	[[ -z "$NODE" ]] && echo "Node is required." && exit 1
 	ssh -q root@"${NODE}" -- echo "pong from \${HOSTNAME}, \$(pveversion)"
+	exit 0
 }
 
 setup_alpine() {
@@ -254,24 +253,24 @@ parse_flags() {
 }
 
 upload() {
-    CTID=$(get_id)
-    NAME=${TARGET:-"ct$CTID"}
-    scp "${@:3}" "${USER_NAME}"@"${NAME}":
+	CTID=$(get_id)
+	NAME=${TARGET:-"ct$CTID"}
+	scp "${@:3}" "${USER_NAME}"@"${NAME}":
 }
 
 download() {
-    CTID=$(get_id)
-    NAME=${TARGET:-"ct$CTID"}
-    scp "${USER_NAME}"@"${NAME}":"${@:3}" .
+	CTID=$(get_id)
+	NAME=${TARGET:-"ct$CTID"}
+	scp "${USER_NAME}"@"${NAME}":"${@:3}" .
 }
 
 list() {
-    # pvesh get /cluster/resources --type vm --outputformat json \
-    # | jq -r '[.[] | {id, name, node, status}] | (.[0] | keys_unsorted) as $keys | map([.[ $keys[]]]) as $rows | $keys, $rows[] | @tsv' \
-    # | column -t \
-    # | grep \"lxc/\"
+	# pvesh get /cluster/resources --type vm --outputformat json \
+	# | jq -r '[.[] | {id, name, node, status}] | (.[0] | keys_unsorted) as $keys | map([.[ $keys[]]]) as $rows | $keys, $rows[] | @tsv' \
+	# | column -t \
+	# | grep \"lxc/\"
 	ssh -q root@"${HOST}" -- "pvesh get /cluster/resources --type vm --noborder 1"
-    exit 0
+	exit 0
 };
 
 run() {
@@ -281,7 +280,7 @@ run() {
 	NODE="$(get_node)"
 	if [[ "$NODE" != "$HOSTNAME" ]]; then
 		scp "$0" root@"${NODE}":/usr/local/bin/ct 1>/dev/null
-	    ssh -qt root@"${NODE}" -- /usr/local/bin/ct "$TARGET" "$@"
+		ssh -qt root@"${NODE}" -- /usr/local/bin/ct "$TARGET" "$@"
 	else
 		$ACTION "$@"
 	fi
@@ -289,51 +288,50 @@ run() {
 
 usage() {
 	cat <<-EOF
-	Usage: $0 <action> [flags]
+	Usage: $0 <command> [options]
 
-	Actions:
-	ping                 Ping a specific node.
-	list                 List all containers.
-	create               Create a container. Flags:
-	                        --id <id>                Container ID.
-	                        --name <name>            Container name.
-	                        --memory <memory>        Memory size in MB.
-	                        --cores <cores>          Number of CPU cores.
-	                        --bridge <bridge>        Network bridge name.
-	                        --disk-size <size>       Disk size in GB.
-	                        --disk-location <location> Disk storage location.
-	                        --os <os>                Operating system.
-	                        --template-location <location> Template location.
-	                        --user-name <name>       User name.
-	                        --user-password <password> User password.
-	                        --user-sshkeys <keys>   User SSH keys.
-	destroy              Destroy a container.
-	update               Update a container.
-	migrate              Migrate a container. Provide the target node.
-	cexec                Execute a command inside a container.
-	ip                   Show IP address of a container.
-	docker               Execute a docker command inside a container.
-	docker_compose       Execute a docker compose command inside a container.
-	docker_update        Update docker images inside a container.
-	docker_install       Install docker inside a container.
+	Commands:
+	create    - Create a container
+	destroy   - Destroy a container
+	update    - Update a container
+	ip        - Get container IP address
+	ip6       - Get container IPv6 address
+	migrate   - Migrate a container to another node
+	cexec     - Execute command inside a container
+	docke     - Execute Docker commands inside a container
+	upload    - Upload files to a container
+	download  - Download files from a container
+	list      - List all containers
+
+	Flags:
+	--id <container_id>                - Specify container ID
+	--name <container_name>            - Specify container name
+	--memory <size_MB>                 - Set memory size in MB (default: 512)
+	--cores <num_cores>                - Set number of CPU cores (default: 2)
+	--bridge <bridge_interface>        - Set bridge interface (default: vmbr0)
+	--disk-size <size_GB>              - Set disk size in GB (default: 8)
+	--disk-location <location>         - Set disk location (default: local-zfs)
+	--os <operating_system>            - Set operating system (default: alpine)
+	--template-location <location>     - Set template location (default: local)
+	--user-name <username>             - Set username (default: hey)
+	--user-password <password>         - Set user password (default: hey)
+	--user-sshkeys <ssh_keys>          - Set user SSH keys (default: ~/.ssh/authorized_keys)
 
 	EOF
+	exit 0
 }
 
 TARGET=$1
 ACTION=$2
 IFS=" " read -r -a NODES <<<"$NODES" # split string into array
 
-[[ "$TARGET" == "help" ]] && usage
+[[ "$TARGET" == "ping" ]] && ping "$@"
 [[ "$TARGET" == "list" ]] && list
+[[ "$TARGET" == "help" ]] && usage
 [[ -z "$ACTION" ]] && usage
 
-# run $ACTION "$@"
-
 case ${ACTION} in
-	# ping) run ping "$@" ;;
-	# docker) run docker "$@";;
-    upload) upload "$@";;
-    download) download "$@";;
+	upload) upload "$@";;
+	download) download "$@";;
 	*) run $ACTION "$@" ;;
 esac
