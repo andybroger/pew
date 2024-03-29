@@ -101,12 +101,51 @@ migrate() {
 	pct migrate "$CTID" "$NODE" --restart 1
 }
 
-cexec() {
+exec() {
 	lxc-attach -n "$CTID" -- "${@:2}"
 }
 
 ct() {
 	pct "$1" "$CTID" "${@:2}"
+}
+
+start() {
+	pct start "$CTID"
+}
+
+stop() {
+	pct stop "$CTID"
+}
+
+restart() {
+	pct restart "$CTID"
+}
+
+status() {
+	pct status "$CTID"
+}
+
+backup() {
+	vzdump "$CTID" --mode snapshot --storage local --compress zstd --notification-policy never --notes-template "Backup of $NAME ($CTID)"
+}
+
+restore() {
+	if [[ -z "$2" ]]; then
+		echo "Backup file is required."
+		echo "example: ct restore 100 /var/lib/vz/dump/vzdump-lxc-100-2021_08_01-00_00_01.tar.zst"
+		exit 1
+	fi
+	read -p "Are you sure you want to restore $NAME ($CTID)? " -n 1 -r
+	echo
+	if [[ $REPLY =~ ^[Yy]$ ]]; then
+		pct stop "$CTID" || true
+		# wait for container to stop
+		echo -n "Stopping container..."
+		while [[ $(pct status "$CTID" | grep "status" | awk '{print $2}') != "stopped" ]]; do
+			sleep 1
+		done
+		pct restore "$CTID" "${2}" --force --storage "${DISK_LOCATION}"
+	fi
 }
 
 docker() {
@@ -280,7 +319,7 @@ run() {
 	NODE="$(get_node)"
 	if [[ "$NODE" != "$HOSTNAME" ]]; then
 		scp "$0" root@"${NODE}":/usr/local/bin/ct 1>/dev/null
-		ssh -qt root@"${NODE}" -- /usr/local/bin/ct "$TARGET" "$@"
+		ssh -qt root@"${NODE}" -- /usr/local/bin/ct "$ACTION" "$@"
 	else
 		$ACTION "$@"
 	fi
@@ -288,49 +327,63 @@ run() {
 
 usage() {
 	cat <<-EOF
-	Usage: $0 <command> [options]
+	Usage: ct <command> [options]
 
-	Commands:
-	create    - Create a container
-	destroy   - Destroy a container
-	update    - Update a container
-	ip        - Get container IP address
-	ip6       - Get container IPv6 address
-	migrate   - Migrate a container to another node
-	cexec     - Execute command inside a container
-	docke     - Execute Docker commands inside a container
-	upload    - Upload files to a container
-	download  - Download files from a container
-	list      - List all containers
+	create               Create a container
+	destroy              Destroy a container
+	start                Start the container
+	stop                 Stop the container
+	restart              Restart the container
+	exec                 Execute command inside a container
+
+	migrate              Migrate a container to another node
+	backup               Backup the container
+	restore              Restore the container
+	update               Update a container
+
+	status               Get the container status
+	ip                   Get container IP address
+	ip6                  Get container IPv6 address
+
+	docker               Execute Docker commands inside a container
+	docker compose       Execute Docker Compose commands inside a container
+	docker apply         Pull and start Docker Compose services
+	docker install       Install Docker and Docker Compose
+
+	upload               Upload files to a container
+	download             Download files from a container
+
+	list                 List all containers
+	ping                 Ping a node
 
 	Flags:
-	--id <container_id>                - Specify container ID
-	--name <container_name>            - Specify container name
-	--memory <size_MB>                 - Set memory size in MB (default: 512)
-	--cores <num_cores>                - Set number of CPU cores (default: 2)
-	--bridge <bridge_interface>        - Set bridge interface (default: vmbr0)
-	--disk-size <size_GB>              - Set disk size in GB (default: 8)
-	--disk-location <location>         - Set disk location (default: local-zfs)
-	--os <operating_system>            - Set operating system (default: alpine)
-	--template-location <location>     - Set template location (default: local)
-	--user-name <username>             - Set username (default: hey)
-	--user-password <password>         - Set user password (default: hey)
-	--user-sshkeys <ssh_keys>          - Set user SSH keys (default: ~/.ssh/authorized_keys)
+	--id <container_id>                Specify container ID
+	--name <container_name>            Specify container name
+	--memory <size_MB>                 Set memory size in MB (default: 512)
+	--cores <num_cores>                Set number of CPU cores (default: 2)
+	--bridge <bridge_interface>        Set bridge interface (default: vmbr0)
+	--disk-size <size_GB>              Set disk size in GB (default: 8)
+	--disk-location <location>         Set disk location (default: local-zfs)
+	--os <operating_system>            Set operating system (default: alpine)
+	--template-location <location>     Set template location (default: local)
+	--user-name <username>             Set username (default: hey)
+	--user-password <password>         Set user password (default: hey)
+	--user-sshkeys <ssh_keys>          Set user SSH keys (default: ~/.ssh/authorized_keys)
 
 	EOF
 	exit 0
 }
 
-TARGET=$1
-ACTION=$2
+TARGET=$2
+ACTION=$1
 IFS=" " read -r -a NODES <<<"$NODES" # split string into array
 
-[[ "$TARGET" == "ping" ]] && ping "$@"
-[[ "$TARGET" == "list" ]] && list
-[[ "$TARGET" == "help" ]] && usage
 [[ -z "$ACTION" ]] && usage
 
 case ${ACTION} in
+	ping) ping "$@" ;;
+	list) list ;;
+	help) usage ;;
 	upload) upload "$@";;
 	download) download "$@";;
 	*) run $ACTION "$@" ;;
