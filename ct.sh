@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-### VARIABLES ###
 HOST=${HOST:-"pve1"}
 PRIMARY=${PRIMARY:-"pve1"}
 NODES=${NODES:-"pve1 pve2 pve3"}
-
 SSHKEY_PATH=${SSHKEY_PATH:-"$HOME/.ssh/id_ed25519.pub"}
-
-### CONTAINER ###
 CTID=${CTID:-""}
 NAME=${NAME:-"ct"}
 MEMORY="${MEMORY:-512}"
@@ -18,21 +14,17 @@ DISK_SIZE=${DISK_SIZE:-"8"}
 DISK_LOCATION=${DISK_LOCATION:-"local-zfs"}
 OS=${OS:-"alpine"}
 TEMPLATE_LOCATION=${TEMPLATE_LOCATION:-"local"}
-
-### USER ###
 USER_NAME=${USER_NAME:-"hey"}
 USER_PASSWORD=${USER_PASSWORD:-"hey"}
-USER_SSHKEYS=${USER_SSHKEYS:-""} # default: "$(cat $HOME/.ssh/authorized_keys)"
+USER_SSHKEYS=${USER_SSHKEYS:-""}
 
-
-
-### COMMANDS ###
 create() {
-	create_flags "${@:2}"
+    parse_flags "${@:2}"
 	local ostemplate
 	ostemplate=$(get_ostemplate)
 
-	echo "Creating container $CTID with $ostemplate ..."
+	echo "Creating container $CTID ($NAME) with $ostemplate on $NODE ..."
+    echo "Cores: $CORES Memory: $MEMORY MB Disk: $DISK_SIZE GB Bridge: $BRIDGE"
 
 	pct create "$CTID" "$ostemplate" \
 		--hostname "$NAME" \
@@ -54,16 +46,15 @@ create() {
 		lxc.hook.pre-start: sh -c "chown -R 0:101000 /dev/dri/"
 	EOF
 
-	# start container
 	echo -n "Starting container..."
 	ha-manager add "${CTID}" --state started
-	# check if container is running
 	while [[ $(pct status "$CTID" | grep "status" | awk '{print $2}') != "running" ]]; do
 		echo -n "."
 		sleep 1
 	done
 	echo " done."
 
+	# create replication jobs
 	for i in "${!NODES[@]}"; do
 		if [[ "${NODES[i]}" != "$HOST" ]]; then
 			pvesr create-local-job "${CTID}"-"${i}" "${NODES[i]}" --schedule "*/5" --rate 10
@@ -77,85 +68,20 @@ create() {
 	esac
 }
 
-create_flags() {
-	while [[ $# -gt 0 ]]; do
-		case $1 in
-		--id)
-			CTID="$2"
-			shift 2
-			;;
-		--name)
-			NAME="$2"
-			shift 2
-			;;
-		--memory)
-			MEMORY="$2"
-			shift 2
-			;;
-		--cores)
-			CORES="$2"
-			shift 2
-			;;
-		--bridge)
-			BRIDGE="$2"
-			shift 2
-			;;
-		--disk-size)
-			DISK_SIZE="$2"
-			shift 2
-			;;
-		--disk-location)
-			DISK_LOCATION="$2"
-			shift 2
-			;;
-		--os)
-			OS="$2"
-			shift 2
-			;;
-		--template-location)
-			TEMPLATE_LOCATION="$2"
-			shift 2
-			;;
-		--user-name)
-			USER_NAME="$2"
-			shift 2
-			;;
-		--user-password)
-			USER_PASSWORD="$2"
-			shift 2
-			;;
-		--user-sshkeys)
-			USER_SSHKEYS="$2"
-			shift 2
-			;;
-		*)
-			echo "Unknown option: $1"
-			exit 1
-			;;
-		esac
-	done
-}
-
 destroy() {
+    # TODO: convert to pct
 	pvesh delete /nodes/"$NODE"/lxc/"$CTID" --destroy-unreferenced-disks 1 --force 1 --purge 1
 }
 
-list() {
-	pvesh get /cluster/resources --type vm --output-format=json \
-		| jq -r '[.[] | {id, name, node, status}] | (.[0] | keys_unsorted) as $keys | map([.[ $keys[]]]) as $rows | $keys, $rows[] | @tsv' \
-		| column -t \
-		| grep "lxc/"
-	exit 0
-};
+
 
 update() {
-	echo "Updating container $CTID ..."
 	local os
 	os=$(get_os)
 
 	if [ "$os" = "debian" ] || [ "$os" = "ubuntu" ]; then
 		lxc-attach -n "$CTID" -- apt update
-		lxc-attach -n "$CTID" -- "$ctid" apt upgrade -y
+		lxc-attach -n "$CTID" -- apt upgrade -y
 	elif [ "$os" = "alpine" ]; then
 		lxc-attach -n "$CTID" -- apk update
 		lxc-attach -n "$CTID" -- apk upgrade
@@ -163,16 +89,17 @@ update() {
 }
 
 ip () {
-	# TODO: run on specific node
-	CTID=$2
-	[[ -z "$CTID" ]] && echo "Container ID is required." && exit 1
-	pct exec "$CTID" -- ip a
+	lxc-attach -n "$CTID" -- ip a show eth0 | grep "inet " | awk '{print $2}' | cut -d/ -f1
+}
+
+ip6 () {
+    lxc-attach -n "$CTID" -- ip a show eth0 | grep "inet6 " | awk '{print $2}' | cut -d/ -f1
 }
 
 migrate() {
-	[[ -z "$CTID" ]] && echo "Container ID is required." && exit 1
 	NODE=$2
 	[[ -z "$NODE" ]] && echo "Node is required." && exit 1
+    echo "Migrating $NAME ($CTID) to $NODE ..."
 	pct migrate "$CTID" "$NODE" --restart 1
 }
 
@@ -180,48 +107,49 @@ cexec() {
 	lxc-attach -n "$CTID" -- "${@:2}"
 }
 
-docker() {
-	lxc-attach -n "$CTID" -- docker "${@:2}"
+ct() {
+	pct "$1" "$CTID" "${@:2}"
 }
 
-docker_compose() {
-	[[ -z "$CTID" ]] && echo "Container ID is required." && exit 1
-	lxc-attach -n "$CTID" -- docker compose "${@:2}"
+dkr() {
+    case $2 in
+    compose) docker_compose "${@:3}" ;;
+    apply) docker_apply "${@:3}" ;;
+    edit) lxc-attach -n "$CTID" -- nvim /home/hey/docker-compose.yml ;;
+    down) lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml down ;;
+    restart) lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml restart ;;
+    install) docker_install "${@:3}" ;;
+    *) lxc-attach -n "$CTID" -- docker "${@:2}" ;;
+    esac
 }
 
-docker_update() {
-	lxc-attach -n "$CTID" -- docker compose pull
-	lxc-attach -n "$CTID" -- docker compose up -d
+docker_apply() {
+	lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml pull
+	lxc-attach -n "$CTID" -- docker compose -f /home/hey/docker-compose.yml up -d
 }
 
 docker_install() {
 	local os
 	os=$(get_os)
-
 	if lxc-attach -n "$CTID" -- which docker &> /dev/null; then
 		echo "Docker is already installed."
 		exit 0
 	fi
 
-	echo -n "Installing docker on ${os}..."
-
 	if [ "$os" = "alpine" ]; then
-		lxc-attach -n "$CTID" -- apk add docker docker-compose &>/dev/null
-		lxc-attach -n "$CTID" -- rc-update add docker boot &>/dev/null
-		lxc-attach -n "$CTID" -- service docker start &>/dev/null
+		lxc-attach -n "$CTID" -- apk add docker docker-compose
+		lxc-attach -n "$CTID" -- rc-update add docker boot
+		lxc-attach -n "$CTID" -- service docker start
 	else
-		lxc-attach -n "$CTID" -- sh -c "curl -fsSL https://get.docker.com | sh &>/dev/null"
+		lxc-attach -n "$CTID" -- sh -c "curl -fsSL https://get.docker.com | sh"
 	fi
-	echo " done."
 }
 
 ping() {
-	NODE=$2
+	NODE=$1
 	[[ -z "$NODE" ]] && echo "Node is required." && exit 1
 	ssh -q root@"${NODE}" -- echo "pong from \${HOSTNAME}, \$(pveversion)"
 }
-
-### SETUP FUNCTIONS ###
 
 setup_alpine() {
 	lxc-attach -n "$CTID" -- sh -c "echo \"https://dl-cdn.alpinelinux.org/alpine/v\$(cut -d. -f1,2 /etc/alpine-release)/main\" > /etc/apk/repositories"
@@ -239,24 +167,22 @@ setup_alpine() {
 }
 
 setup_debian() {
-	lxc-attach -n "$CTID" -- "apt update &>/dev/null && apt dist-upgrade -y &>/dev/null"
-	lxc-attach -n "$CTID" -- "apt install -y openssh-server sudo bash curl neovim git btop tree tmux net-tools jq &>/dev/null"
-	lxc-attach -n "$CTID" -- "systemctl enable --now ssh &>/dev/null"
-	lxc-attach -n "$CTID" -- "adduser --disabled-password --gecos '' ${USER_NAME} &>/dev/null"
-	lxc-attach -n "$CTID" -- "echo ${USER_NAME}:${USER_PASSWORD} | chpasswd &>/dev/null"
-	lxc-attach -n "$CTID" -- "echo '${USER_NAME} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/${USER_NAME}"
-	lxc-attach -n "$CTID" -- "mkdir -p /home/${USER_NAME}/.ssh"
-	lxc-attach -n "$CTID" -- "echo '${SSHKEY}' > /home/${USER_NAME}/.ssh/authorized_keys"
-	lxc-attach -n "$CTID" -- "chown -R ${USER_NAME}:${USER_NAME} /home/${USER_NAME}/.ssh"
-	lxc-attach -n "$CTID" -- "chmod 700 /home/${USER_NAME}/.ssh"
-	lxc-attach -n "$CTID" -- "chmod 600 /home/${USER_NAME}/.ssh/authorized_keys"
+	lxc-attach -n "$CTID" -- bash -c "apt update &>/dev/null && apt dist-upgrade -y"
+	lxc-attach -n "$CTID" -- bash -c "apt install -y openssh-server sudo bash curl neovim git btop tree tmux net-tools jq"
+	lxc-attach -n "$CTID" -- bash -c "systemctl enable --now ssh"
+	lxc-attach -n "$CTID" -- bash -c "adduser --disabled-password --gecos '' ${USER_NAME}"
+	lxc-attach -n "$CTID" -- bash -c "echo ${USER_NAME}:${USER_PASSWORD} | chpasswd"
+	lxc-attach -n "$CTID" -- bash -c "echo '${USER_NAME} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/${USER_NAME}"
+	lxc-attach -n "$CTID" -- bash -c "mkdir -p /home/${USER_NAME}/.ssh"
+	lxc-attach -n "$CTID" -- bash -c "echo '${USER_SSHKEYS:-\"$(cat "$HOME"/.ssh/authorized_keys)\"}' > /home/${USER_NAME}/.ssh/authorized_keys"
+	lxc-attach -n "$CTID" -- bash -c "chown -R ${USER_NAME}:${USER_NAME} /home/${USER_NAME}/.ssh"
+	lxc-attach -n "$CTID" -- bash -c "chmod 700 /home/${USER_NAME}/.ssh"
+	lxc-attach -n "$CTID" -- bash -c "chmod 600 /home/${USER_NAME}/.ssh/authorized_keys"
 }
-
-### HELPER FUNCTIONS ###
 
 get_ostemplate() {
 	match=$(pveam available --section system | grep "$OS")
-	[[ -z "$match" ]] && echo "No matching image found for $OS" && exit 1
+	[[ -z "$match" ]] && exit 1
 	local ostemplate
 	ostemplate=$(echo "$match" | awk '{print $2}' | sort -r | head -n1)
 	pveam download "$TEMPLATE_LOCATION" "$ostemplate" &>/dev/null
@@ -307,24 +233,56 @@ is_proxmox() {
 	command -v pveversion &>/dev/null
 }
 
+parse_flags() {
+	while [[ $# -gt 0 ]]; do
+		case $1 in
+		--id) CTID="$2"; shift 2 ;;
+		--name) NAME="$2"; shift 2 ;;
+		--memory) MEMORY="$2"; shift 2 ;;
+		--cores) CORES="$2"; shift 2 ;;
+		--bridge) BRIDGE="$2"; shift 2 ;;
+		--disk-size) DISK_SIZE="$2"; shift 2 ;;
+		--disk-location) DISK_LOCATION="$2"; shift 2 ;;
+		--os) OS="$2"; shift 2 ;;
+		--template-location) TEMPLATE_LOCATION="$2"; shift 2 ;;
+		--user-name) USER_NAME="$2"; shift 2 ;;
+		--user-password) USER_PASSWORD="$2"; shift 2 ;;
+		--user-sshkeys) USER_SSHKEYS="$2"; shift 2 ;;
+		*) echo "Unknown option: $1"; exit 1 ;;
+		esac
+	done
+}
+
+upload() {
+    CTID=$(get_id)
+    NAME=${TARGET:-"ct$CTID"}
+    scp "${@:3}" "${USER_NAME}"@"${NAME}":
+}
+
+download() {
+    CTID=$(get_id)
+    NAME=${TARGET:-"ct$CTID"}
+    scp "${USER_NAME}"@"${NAME}":"${@:3}" .
+}
+
+list() {
+    # pvesh get /cluster/resources --type vm --outputformat json \
+    # | jq -r '[.[] | {id, name, node, status}] | (.[0] | keys_unsorted) as $keys | map([.[ $keys[]]]) as $rows | $keys, $rows[] | @tsv' \
+    # | column -t \
+    # | grep \"lxc/\"
+	ssh -q root@"${HOST}" -- "pvesh get /cluster/resources --type vm --noborder 1"
+    exit 0
+};
+
 run() {
 	shift 2
 	CTID="$(get_id)"
-
-	if [[ -z "$CTID" && "$ACTION" != "list" ]]; then
-		echo "Container $TARGET not found."
-		exit 1
-	fi
-
 	NAME=${TARGET:-"ct$CTID"}
 	NODE="$(get_node)"
-
 	if [[ "$NODE" != "$HOSTNAME" ]]; then
 		scp "$0" root@"${NODE}":/usr/local/bin/ct 1>/dev/null
-		ssh -qt root@"${NODE}" -- ct "$ACTION" "$@"
+	    ssh -qt root@"${NODE}" -- /usr/local/bin/ct "$TARGET" "$@"
 	else
-		echo -n "Running $ACTION via $NODE"
-		echo " on container $NAME ($CTID)"
 		$ACTION "$@"
 	fi
 }
@@ -362,26 +320,20 @@ usage() {
 	EOF
 }
 
-### PARAMS ###
-ACTION=$1
-TARGET=$2
-# split NODES into array
-IFS=" " read -r -a NODES <<<"$NODES"
+TARGET=$1
+ACTION=$2
+IFS=" " read -r -a NODES <<<"$NODES" # split string into array
 
+[[ "$TARGET" == "help" ]] && usage
+[[ "$TARGET" == "list" ]] && list
 [[ -z "$ACTION" ]] && usage
 
+# run $ACTION "$@"
+
 case ${ACTION} in
-	ping) run ping "$@" ;;
-	create) run create "$@";;
-	destroy) run destroy "$@";;
-	list) run list "$@";;
-	update) run update "$@";;
-	migrate) run migrate "$@";;
-	cexec) run cexec "$@";;
-	ip) run ip "$@";;
-	docker) run docker "$@";;
-	docker_compose) run docker_compose "$@";;
-	docker_update) run docker_update "$@";;
-	docker_install) run docker_install "$@";;
-	*) echo "unknown action: $ACTION"; usage;;
+	# ping) run ping "$@" ;;
+	# docker) run docker "$@";;
+    upload) upload "$@";;
+    download) download "$@";;
+	*) run $ACTION "$@" ;;
 esac
